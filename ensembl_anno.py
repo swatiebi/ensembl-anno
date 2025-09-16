@@ -1414,7 +1414,7 @@ def run_miniprot_align(
 
     if not miniprot_path:
         #miniprot_path = config["miniprot"]["software"]
-        miniprot_path = "/hps/software/users/ensembl/repositories/swati/miniprot/miniprot"
+        miniprot_path = "/hps/software/users/ensembl/genebuild/swati/miniprot/miniprot"
 
     utils.check_exe(miniprot_path)
     utils.create_dir(miniprot_dir, None)
@@ -4421,9 +4421,14 @@ if __name__ == "__main__":
         help="Run miniprot to align protein sequences",
     )
     parser.add_argument(
-        "--run_busco",
+        "--run_genblast_busco",
         action="store_true",
         help="Run GenBlast to align BUSCO protein sequences",
+    )
+    parser.add_argument(
+        "--run_miniprot_busco",
+        action="store_true",
+        help="Run Miniprot to align BUSCO protein sequences",
     )
     parser.add_argument(
         "--protein_file",
@@ -4645,10 +4650,13 @@ if __name__ == "__main__":
     miniprot_path = args.miniprot_path
     convert2blastmask_path = args.convert2blastmask_path
     makeblastdb_path = args.makeblastdb_path
+    use_genblast = args.use_geneblast
     run_genblast = args.run_genblast
+    run_genblast_busco = args.run_genblast_busco
     genblast_timeout = args.genblast_timeout
+    use_miniprot = args.use_miniprot
     run_miniprot = args.run_miniprot
-    run_busco = args.run_busco
+    run_miniprot_busco = args.run_miniprot_busco
     protein_file = args.protein_file
     busco_protein_file = args.busco_protein_file
     rfam_accessions_file = args.rfam_accessions_file
@@ -4753,6 +4761,10 @@ if __name__ == "__main__":
         run_transcriptomic = True
         run_proteins = True
         finalise_geneset = True
+        run_genblast = use_genblast  # Only run GenBlast if user selected it
+        run_genblast_busco = use_genblast
+        run_miniprot = use_miniprot
+        run_genblast_miniprot = use_miniprot
 
     # These are subsets of the analyses that can be run, group by type
     if run_repeats:
@@ -4923,20 +4935,22 @@ if __name__ == "__main__":
     # Protein analyses
     #################################
     # Run GenBlast
-    if run_genblast:
-        logger.info("Running GenBlast")
-        logger.info("run_genblast genome file %s", masked_genome_file)
-        run_genblast_align(
-            genblast_path,
-            convert2blastmask_path,
-            makeblastdb_path,
-            os.path.join(work_dir, "genblast_output"),
-            protein_file,
-            masked_genome_file,
-            max_intron_length,
-            num_threads,
-            genblast_timeout,
-        )
+    if run_proteins:
+        # Run Genblast
+        if run_genblast:
+            logger.info("Running GenBlast")
+            logger.info("run_genblast genome file %s", masked_genome_file)
+            run_genblast_align(
+                genblast_path,
+                convert2blastmask_path,
+                makeblastdb_path,
+                os.path.join(work_dir, "genblast_output"),
+                protein_file,
+                masked_genome_file,
+                max_intron_length,
+                num_threads,
+                genblast_timeout,
+            )
 
     # Run miniprot
     if run_miniprot:
@@ -4953,7 +4967,7 @@ if __name__ == "__main__":
 
     # Run GenBlast on BUSCO set, gives higher priority when creating thei
     # final genes in cases where transcriptomic data are missing or fragmented
-    if run_busco:
+    if run_genblast_busco:
         logger.info("Running GenBlast of BUSCO proteins")
         logger.info("run_busco genome file %s", masked_genome_file)
         run_genblast_align(
