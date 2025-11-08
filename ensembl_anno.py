@@ -4761,10 +4761,6 @@ if __name__ == "__main__":
         run_transcriptomic = True
         run_proteins = True
         finalise_geneset = True
-        run_genblast = use_genblast  # Only run GenBlast if user selected it
-        run_genblast_busco = use_genblast
-        run_miniprot = use_miniprot
-        run_genblast_miniprot = use_miniprot
 
     # These are subsets of the analyses that can be run, group by type
     if run_repeats:
@@ -4792,8 +4788,10 @@ if __name__ == "__main__":
     if run_proteins:
         if protein_file:
             run_genblast = True
+            run_miniprot = True
         if busco_protein_file:
-            run_busco = True
+            run_genblast_busco = True
+            run_miniprot_busco = True
 
     # Collect a list of seq region names, most useful for multiprocessing regions
     seq_region_names = seq_region_names(genome_file)
@@ -4980,6 +4978,18 @@ if __name__ == "__main__":
             max_intron_length,
             num_threads,
             genblast_timeout,
+        )
+
+    if run_miniprot_busco:
+        logger.info ("Running miniprot of OrthoDB proteins")
+        logger.info("run_miniprot genome file %s", masked_genome_file)
+        run_miniprot_align(
+            miniprot_path,
+            os.path.join(work_dir, "miniprot_output"),
+            busco_protein_file,
+            masked_genome_file,
+            max_intron_length,
+            num_threads,
         )
 
     #################################
