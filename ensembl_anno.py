@@ -3303,9 +3303,14 @@ def run_finalise_geneset(
     # I'm coverting to a list of conditions as
     # it's more straightforward with the renaming
     # and having to merge scallop and stringtie
-    protein_annotation_raw = os.path.join(
-        main_output_dir, "genblast_output", "annotation.gtf"
-    )
+    if run_genblast_explicit:
+        protein_annotation_raw = os.path.join(
+            main_output_dir, "genblast_output", "annotation.gtf"
+        )
+    else:
+        protein_annotation_raw = os.path.join(
+            main_output_dir, "miniprot_output", "annotation.gtf"
+        )
     minimap2_annotation_raw = os.path.join(
         main_output_dir, "minimap2_output", "annotation.gtf"
     )
@@ -3315,8 +3320,10 @@ def run_finalise_geneset(
     scallop_annotation_raw = os.path.join(
         main_output_dir, "scallop_output", "annotation.gtf"
     )
-    busco_annotation_raw = os.path.join(main_output_dir, "busco_output", "annotation.gtf")
-
+    if run_genblast_explicit:
+        busco_annotation_raw = os.path.join(main_output_dir, "genblast_busco_output", "annotation.gtf")
+    else:
+        busco_annotation_raw = os.path.join(main_output_dir, "miniprot_busco_output", "annotation.gtf")
     transcript_selector_script = os.path.join(
         main_script_dir, "support_scripts_perl", "select_best_transcripts.pl"
     )
@@ -4600,7 +4607,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--run_proteins",
         action="store_true",
-        help="Run GenBlast if protein_file and/or busco_protein_file",
+        help="Run Miniprot if protein_file and/or busco_protein_file",
     )
     parser.add_argument(
         "--diamond_validation_db",
@@ -4650,11 +4657,13 @@ if __name__ == "__main__":
     miniprot_path = args.miniprot_path
     convert2blastmask_path = args.convert2blastmask_path
     makeblastdb_path = args.makeblastdb_path
-    use_genblast = args.use_geneblast
-    run_genblast = args.run_genblast
-    run_genblast_busco = args.run_genblast_busco
+    run_miniprot = False
+    run_miniprot_busco = False
+    run_genblast = False
+    run_genblast_busco = False
+    run_genblast_explicit = args.run_genblast
+    run_genblast_busco_explicit = args.run_genblast_busco
     genblast_timeout = args.genblast_timeout
-    use_miniprot = args.use_miniprot
     run_miniprot = args.run_miniprot
     run_miniprot_busco = args.run_miniprot_busco
     protein_file = args.protein_file
@@ -4787,11 +4796,14 @@ if __name__ == "__main__":
 
     if run_proteins:
         if protein_file:
-            run_genblast = True
             run_miniprot = True
+            #optionally run Genblast
+            if run_genblast_explicit:
+                run_genblast = True
         if busco_protein_file:
-            run_genblast_busco = True
             run_miniprot_busco = True
+            if run_genblast_explicit:
+                run_genblast_busco = True
 
     # Collect a list of seq region names, most useful for multiprocessing regions
     seq_region_names = seq_region_names(genome_file)
@@ -4949,49 +4961,45 @@ if __name__ == "__main__":
                 num_threads,
                 genblast_timeout,
             )
+        # Run miniprot
+        if run_miniprot:
+            logger.info("Running miniprot")
+            logger.info("run_miniprot genome file %s", masked_genome_file)
+            run_miniprot_align(
+                miniprot_path,
+                os.path.join(work_dir, "miniprot_output"),
+                protein_file,
+                masked_genome_file,
+                max_intron_length,
+                num_threads,
+            )
 
-    # Run miniprot
-    if run_miniprot:
-        logger.info("Running miniprot")
-        logger.info("run_miniprot genome file %s", masked_genome_file)
-        run_miniprot_align(
-            miniprot_path,
-            os.path.join(work_dir, "miniprot_output"),
-            protein_file,
-            masked_genome_file,
-            max_intron_length,
-            num_threads,
-        )
+        if run_genblast_busco:
+            logger.info("Running GenBlast of BUSCO proteins")
+            logger.info("run_busco genome file %s", masked_genome_file)
+            run_genblast_align(
+                genblast_path,
+                convert2blastmask_path,
+                makeblastdb_path,
+                os.path.join(work_dir, "genblast_busco_output"),
+                busco_protein_file,
+                masked_genome_file,
+                max_intron_length,
+                num_threads,
+                genblast_timeout,
+            )
 
-    # Run GenBlast on BUSCO set, gives higher priority when creating thei
-    # final genes in cases where transcriptomic data are missing or fragmented
-    if run_genblast_busco:
-        logger.info("Running GenBlast of BUSCO proteins")
-        logger.info("run_busco genome file %s", masked_genome_file)
-        run_genblast_align(
-            genblast_path,
-            convert2blastmask_path,
-            makeblastdb_path,
-            os.path.join(work_dir, "busco_output"),
-            busco_protein_file,
-            masked_genome_file,
-            max_intron_length,
-            num_threads,
-            genblast_timeout,
-        )
-
-    if run_miniprot_busco:
-        logger.info ("Running miniprot of OrthoDB proteins")
-        logger.info("run_miniprot genome file %s", masked_genome_file)
-        run_miniprot_align(
-            miniprot_path,
-            os.path.join(work_dir, "miniprot_output"),
-            busco_protein_file,
-            masked_genome_file,
-            max_intron_length,
-            num_threads,
-        )
-
+        if run_miniprot_busco:
+            logger.info ("Running miniprot of OrthoDB proteins")
+            logger.info("run_miniprot genome file %s", masked_genome_file)
+            run_miniprot_align(
+                miniprot_path,
+                os.path.join(work_dir, "miniprot_busco_output"),
+                busco_protein_file,
+                masked_genome_file,
+                max_intron_length,
+                num_threads,
+            )
     #################################
     # Finalisation analyses
     #################################
