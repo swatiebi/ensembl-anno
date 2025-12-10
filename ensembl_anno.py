@@ -1404,7 +1404,9 @@ def check_rnafold_structure(seq, rfam_output_dir):
 
 
 def run_miniprot_align(
+    work_dir,
     miniprot_path,
+    minisplice_path,
     miniprot_dir,
     protein_file,
     masked_genome_file,
@@ -1415,13 +1417,17 @@ def run_miniprot_align(
     if not miniprot_path:
         #miniprot_path = config["miniprot"]["software"]
         miniprot_path = "/hps/software/users/ensembl/genebuild/swati/miniprot/miniprot"
+    if not minisplice_path:
+        minisplice_path = "/hps/software/users/ensembl/genebuild/swati/minisplice/minisplice"
 
     utils.check_exe(miniprot_path)
+    utils.check_exe(minisplice_path)
     utils.create_dir(miniprot_dir, None)
 
     logger.info("Skip analysis if the gtf file already exists")
     initial_output_file = os.path.join(miniprot_dir, "initial_annotation.gff")
     output_file = os.path.join(miniprot_dir, "annotation.gtf")
+    score_tsv = os.path.join(work_dir, "score.tsv")
     if os.path.exists(output_file):
         transcript_count = utils.check_gtf_content(output_file, "transcript")
         if transcript_count > 0:
@@ -1438,6 +1444,27 @@ def run_miniprot_align(
     if not os.path.exists(protein_file):
         raise IOError("Protein file does not exist: %s" % protein_file)
 
+    if not os.path.exists(score_tsv) or os.path.getsize(score_tsv) == 0:
+        minisplice_cmd = [
+            minisplice_path,
+            "predict",
+            "-t" + str(num_threads),
+            "-c",
+            "/hps/nobackup/flicek/ensembl/genebuild/swati/gdm_mammals/gene_boundries_benchmarking/miniprot/vi2-7k.kan.cali",
+            "/hps/nobackup/flicek/ensembl/genebuild/swati/gdm_mammals/gene_boundries_benchmarking/miniprot/vi2-7k.kan",
+            masked_genome_file
+        ]
+        logger.info(" ".join(minisplice_cmd))
+        with open(score_tsv, 'w') as score_file:
+            subprocess.run(minisplice_cmd, stdout=score_file)
+    
+        if not os.path.exists(score_tsv) or os.path.getsize(score_tsv) == 0:
+            raise RuntimeError("minisplice failed to generate score.tsv!")
+        logger.info ("minisplice completed successfully.")
+
+    else:
+        logger.info("Skipping minisplice — score.tsv already exists.")
+
     if not os.path.exists(miniprot_index_file):
         run_miniprot_index(miniprot_path, masked_genome_file, miniprot_index_file, num_threads)
     else:
@@ -1446,10 +1473,15 @@ def run_miniprot_align(
     if not os.path.exists(miniprot_index_file):
         raise IOError("miniprot index file does not exist: %s" % miniprot_index_file)
 
-    logger.info("Running miniprot mapping:")
+    logger.info("Running miniprot mapping using score.tsv:")
     cmd = [
         miniprot_path,
         "-t" + str(num_threads),
+        "-Iu",
+        "-j2",
+        "--spsc=" + score_tsv,
+        "-N 1",#get exactly one alignment per protein, primary alignment
+        "--outs=1.0",#Keep only chains equal to best
         "--gff",
         miniprot_index_file,
         protein_file,
@@ -1489,8 +1521,21 @@ def convert_miniprot_gff_to_gtf(input_file=None,output_file=None):
     file_out=open(output_file, 'w+')
 
     for block in blocks:
+        nblock_lines = [x for x in block.split("\n") if x != ""]
+        if not nblock_lines:
+            continue
+        header_line = nblock_lines[0]
         nblock = [x for x in block.split("\n") if x!=''][1:] # split the block by newline and remove empty lines
         nblock = np.array([x.split("\t") for x in nblock if x!='']) # split each line in the nblock by tab
+        if "fs:i:" in header_line: ##   FILTER: keep only fs:i:0 and st:i:0
+            m_fs = re.search(r"fs:i:(\d+)", header_line)
+            if m_fs and int(m_fs.group(1)) != 0:
+                continue  # skip this block
+        
+        if "st:i:" in header_line:
+            m_st = re.search(r"st:i:(\d+)", header_line) #   FILTER: keep only fs:i:0 and st:i:0
+            if m_st and int(m_st.group(1)) != 0:
+                continue  # skip this block
 
         if nblock.shape[0] != 0:
             nrows, ncols= nblock.shape
@@ -3274,6 +3319,10 @@ def run_finalise_geneset(
     diamond_validation_db,
     num_threads,
 ):
+    genblast_annotation_raw = None
+    miniprot_annotation_raw = None
+    genblast_busco_annotation_raw = None
+    miniprot_busco_annotation_raw = None
 
     if validation_type is None:
         logger.info("Setting validation type to relaxed")
@@ -3303,14 +3352,22 @@ def run_finalise_geneset(
     # I'm coverting to a list of conditions as
     # it's more straightforward with the renaming
     # and having to merge scallop and stringtie
-    if run_genblast_explicit:
-        protein_annotation_raw = os.path.join(
-            main_output_dir, "genblast_output", "annotation.gtf"
-        )
-    else:
-        protein_annotation_raw = os.path.join(
-            main_output_dir, "miniprot_output", "annotation.gtf"
-        )
+    if run_genblast:
+        genblast_annotation_raw = os.path.join(final_annotation_dir, "genblast_raw.gtf")
+        shutil.copy(os.path.join(main_output_dir, "genblast_output", "annotation.gtf"),genblast_annotation_raw)
+
+    if run_miniprot:
+        miniprot_annotation_raw = os.path.join(final_annotation_dir, "miniprot_raw.gtf")
+        shutil.copy(os.path.join(main_output_dir, "miniprot_output", "annotation.gtf"),miniprot_annotation_raw)
+    
+    if run_genblast_busco:
+        genblast_busco_annotation_raw = os.path.join(final_annotation_dir, "genblast_busco_raw.gtf")
+        shutil.copy(os.path.join(main_output_dir, "genblast_busco_output", "annotation.gtf"),genblast_busco_annotation_raw)
+
+    if run_miniprot_busco:
+        miniprot_busco_annotation_raw = os.path.join(final_annotation_dir, "miniprot_busco_raw.gtf")
+        shutil.copy(os.path.join(main_output_dir, "miniprot_busco_output", "annotation.gtf"),miniprot_busco_annotation_raw)
+
     minimap2_annotation_raw = os.path.join(
         main_output_dir, "minimap2_output", "annotation.gtf"
     )
@@ -3320,10 +3377,7 @@ def run_finalise_geneset(
     scallop_annotation_raw = os.path.join(
         main_output_dir, "scallop_output", "annotation.gtf"
     )
-    if run_genblast_explicit:
-        busco_annotation_raw = os.path.join(main_output_dir, "genblast_busco_output", "annotation.gtf")
-    else:
-        busco_annotation_raw = os.path.join(main_output_dir, "miniprot_busco_output", "annotation.gtf")
+
     transcript_selector_script = os.path.join(
         main_script_dir, "support_scripts_perl", "select_best_transcripts.pl"
     )
@@ -3364,28 +3418,8 @@ def run_finalise_geneset(
         file_in.close()
     file_out.close()
 
-    # Copy the raw files into the annotation dir, this is not needed
-    # as such, but collecting them in one place and relabelling is
-    # helpful for a user
-    if os.path.exists(busco_annotation_raw):
-        subprocess.run(
-            [
-                "cp",
-                busco_annotation_raw,
-                os.path.join(final_annotation_dir, "busco_raw.gtf"),
-            ]
-        )
 
-    if os.path.exists(protein_annotation_raw):
-        subprocess.run(
-            [
-                "cp",
-                protein_annotation_raw,
-                os.path.join(final_annotation_dir, "protein_raw.gtf"),
-            ]
-        )
-
-    gtf_files = ["transcriptomic_raw.gtf", "protein_raw.gtf", "busco_raw.gtf"]
+    gtf_files = ["transcriptomic_raw.gtf", "genblast_raw.gtf", "miniprot_raw.gtf", "genblast_busco_raw.gtf", "miniprot_busco_raw.gtf"]
     generic_select_cmd = [
         "perl",
         transcript_selector_script,
@@ -3402,11 +3436,17 @@ def run_finalise_geneset(
         transcriptomic_region_gtf_path = os.path.join(
             region_annotation_dir, (region_details + ".trans.gtf")
         )
-        busco_region_gtf_path = os.path.join(
-            region_annotation_dir, (region_details + ".busco.gtf")
+        genblast_protein_region_gtf_path = os.path.join(
+            region_annotation_dir, (region_details + ".genblast.protein.gtf")
         )
-        protein_region_gtf_path = os.path.join(
-            region_annotation_dir, (region_details + ".protein.gtf")
+        genblast_busco_region_gtf_path = os.path.join(
+            region_annotation_dir, (region_details + ".genblast.busco.gtf")
+        )
+        miniprot_protein_region_gtf_path = os.path.join(
+            region_annotation_dir, (region_details + ".miniprot.protein.gtf")
+        )
+        miniprot_busco_region_gtf_path = os.path.join(
+            region_annotation_dir, (region_details + ".miniprot.busco.gtf")
         )
 
         if os.path.exists(transcriptomic_annotation_raw):
@@ -3430,29 +3470,29 @@ def run_finalise_geneset(
             )
             pool.apply_async(multiprocess_finalise_geneset, args=(cmd,))
 
-        if os.path.exists(busco_annotation_raw):
-            logger.info("Finalising BUSCO data for: " + seq_region_name)
-            busco_annotation_select = re.sub("_raw.gtf", "_sel.gtf", busco_annotation_raw)
+        if genblast_annotation_raw and os.path.exists(genblast_annotation_raw):
+            logger.info("Finalising genblast protein data for: " + seq_region_name)
+            genblast_annotation_select = re.sub("_raw.gtf", "_sel.gtf", genblast_annotation_raw)
             cmd = generic_select_cmd.copy()
             cmd.extend(
                 [
                     "-region_details",
                     region_details,
                     "-input_gtf_file",
-                    busco_annotation_raw,
+                    genblast_annotation_raw,
                     "-output_gtf_file",
-                    busco_region_gtf_path,
+                    genblast_protein_region_gtf_path,
                     "-all_cds_exons",
                     "-final_biotype",
-                    "busco",
+                    "genblast-protein",
                 ]
             )
             pool.apply_async(multiprocess_finalise_geneset, args=(cmd,))
 
-        if os.path.exists(protein_annotation_raw):
+        if miniprot_annotation_raw and os.path.exists(miniprot_annotation_raw):
             logger.info("Finalising protein data for: " + seq_region_name)
-            protein_annotation_select = re.sub(
-                "_raw.gtf", "_sel.gtf", protein_annotation_raw
+            miniprot_annotation_select = re.sub(
+                "_raw.gtf", "_sel.gtf", miniprot_annotation_raw
             )
             cmd = generic_select_cmd.copy()
             cmd.extend(
@@ -3460,13 +3500,52 @@ def run_finalise_geneset(
                     "-region_details",
                     region_details,
                     "-input_gtf_file",
-                    protein_annotation_raw,
+                    miniprot_annotation_raw,
                     "-output_gtf_file",
-                    protein_region_gtf_path,
+                    miniprot_protein_region_gtf_path,
                     "-clean_transcripts",
                     "-all_cds_exons",
                     "-final_biotype",
-                    "protein",
+                    "miniprot-protein",
+                ]
+            )
+            pool.apply_async(multiprocess_finalise_geneset, args=(cmd,))
+
+        if genblast_busco_annotation_raw and os.path.exists(genblast_busco_annotation_raw):
+            logger.info("Finalising genblast orthodb data for: " + seq_region_name)
+            genblast_busco_annotation_select = re.sub("_raw.gtf", "_sel.gtf", genblast_busco_annotation_raw)
+            cmd = generic_select_cmd.copy()
+            cmd.extend(
+                [
+                    "-region_details",
+                    region_details,
+                    "-input_gtf_file",
+                    genblast_busco_annotation_raw,
+                    "-output_gtf_file",
+                    genblast_busco_region_gtf_path,
+                    "-all_cds_exons",
+                    "-final_biotype",
+                    "genblast-orthodb",
+                ]
+            )
+            pool.apply_async(multiprocess_finalise_geneset, args=(cmd,))
+
+        if miniprot_busco_annotation_raw and os.path.exists(miniprot_busco_annotation_raw):
+            logger.info("Finalising miniprot orthodb data for: " + seq_region_name)
+            miniprot_busco_annotation_select = re.sub("_raw.gtf", "_sel.gtf", miniprot_busco_annotation_raw)
+            cmd = generic_select_cmd.copy()
+            cmd.extend(
+                [
+                    "-region_details",
+                    region_details,
+                    "-input_gtf_file",
+                    miniprot_busco_annotation_raw,
+                    "-output_gtf_file",
+                    miniprot_busco_region_gtf_path,
+                    "-clean_transcripts",
+                    "-all_cds_exons",
+                    "-final_biotype",
+                    "miniprot-orthodb",
                 ]
             )
             pool.apply_async(multiprocess_finalise_geneset, args=(cmd,))
@@ -3482,10 +3561,16 @@ def run_finalise_geneset(
         "transcriptomic",
     )
     merge_finalise_output_files(
-        final_annotation_dir, region_annotation_dir, ".busco.gtf", "busco"
+        final_annotation_dir, region_annotation_dir, ".genblast.protein.gtf", "genblast-protein"
     )
     merge_finalise_output_files(
-        final_annotation_dir, region_annotation_dir, ".protein.gtf", "protein"
+        final_annotation_dir, region_annotation_dir, ".miniprot.protein.gtf", "miniprot-protein"
+    )
+    merge_finalise_output_files(
+        final_annotation_dir, region_annotation_dir, ".genblast.busco.gtf", "genblast-orthodb"
+    )
+    merge_finalise_output_files(
+        final_annotation_dir, region_annotation_dir, ".miniprot.busco.gtf", "miniprot-orthodb"
     )
 
     # Create a single GTF file with all the selected transcripts
@@ -4399,9 +4484,14 @@ if __name__ == "__main__":
         genblast/download.html",
     )
     parser.add_argument(
+        "--minisplice_path",
+        type=str,
+        help="Path minisplice executable. See ",
+    )
+    parser.add_argument(
         "--miniprot_path",
         type=str,
-        help="Path miniprot executable. See https://github.com/lh3/miniprot",
+        help="Path miniprot executable. See https://github.com/lh3/miniprot ",
     )
     parser.add_argument(
         "--convert2blastmask_path",
@@ -4655,15 +4745,17 @@ if __name__ == "__main__":
     red_path = args.red_path
     genblast_path = args.genblast_path
     miniprot_path = args.miniprot_path
+    minisplice_path =args.minisplice_path
     convert2blastmask_path = args.convert2blastmask_path
     makeblastdb_path = args.makeblastdb_path
+    run_proteins = False
     run_miniprot = False
     run_miniprot_busco = False
     run_genblast = False
     run_genblast_busco = False
-    run_genblast_explicit = args.run_genblast
-    run_genblast_busco_explicit = args.run_genblast_busco
     genblast_timeout = args.genblast_timeout
+    run_genblast = args.run_genblast
+    run_genblast_busco = args.run_genblast_busco
     run_miniprot = args.run_miniprot
     run_miniprot_busco = args.run_miniprot_busco
     protein_file = args.protein_file
@@ -4797,13 +4889,10 @@ if __name__ == "__main__":
     if run_proteins:
         if protein_file:
             run_miniprot = True
-            #optionally run Genblast
-            if run_genblast_explicit:
-                run_genblast = True
+            run_genblast = True
         if busco_protein_file:
             run_miniprot_busco = True
-            if run_genblast_explicit:
-                run_genblast_busco = True
+            run_genblast_busco = True
 
     # Collect a list of seq region names, most useful for multiprocessing regions
     seq_region_names = seq_region_names(genome_file)
@@ -4965,8 +5054,11 @@ if __name__ == "__main__":
         if run_miniprot:
             logger.info("Running miniprot")
             logger.info("run_miniprot genome file %s", masked_genome_file)
+            logger.info("number of threads %s", num_threads)
             run_miniprot_align(
+                work_dir,
                 miniprot_path,
+                minisplice_path,
                 os.path.join(work_dir, "miniprot_output"),
                 protein_file,
                 masked_genome_file,
@@ -4993,7 +5085,9 @@ if __name__ == "__main__":
             logger.info ("Running miniprot of OrthoDB proteins")
             logger.info("run_miniprot genome file %s", masked_genome_file)
             run_miniprot_align(
+                work_dir,    
                 miniprot_path,
+                minisplice_path,
                 os.path.join(work_dir, "miniprot_busco_output"),
                 busco_protein_file,
                 masked_genome_file,
